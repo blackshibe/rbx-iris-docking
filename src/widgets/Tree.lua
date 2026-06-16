@@ -1,60 +1,62 @@
 local Types = require(script.Parent.Parent.Types)
 
 return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
-    local abstractTree = {
-        hasState = true,
-        hasChildren = true,
-        Events = {
-            ["collapsed"] = {
-                ["Init"] = function(_thisWidget: Types.Widget) end,
-                ["Get"] = function(thisWidget: Types.Widget)
-                    return thisWidget.lastCollapsedTick == Iris._cycleTick
-                end,
-            },
-            ["uncollapsed"] = {
-                ["Init"] = function(_thisWidget: Types.Widget) end,
-                ["Get"] = function(thisWidget: Types.Widget)
-                    return thisWidget.lastUncollapsedTick == Iris._cycleTick
-                end,
-            },
-            ["hovered"] = widgets.EVENTS.hover(function(thisWidget)
-                return thisWidget.Instance
-            end),
-        },
-        Discard = function(thisWidget: Types.Widget)
-            thisWidget.Instance:Destroy()
-            widgets.discardState(thisWidget)
-        end,
-        ChildAdded = function(thisWidget: Types.Widget, _otherWidget: Types.Widget)
-            local ChildContainer = thisWidget.ChildContainer :: Frame
+	local abstractTree = {
+		hasState = true,
+		hasChildren = true,
+		Events = {
+			["collapsed"] = {
+				["Init"] = function(_thisWidget: Types.Widget) end,
+				["Get"] = function(thisWidget: Types.Widget)
+					return thisWidget.lastCollapsedTick == Iris._cycleTick
+				end,
+			},
+			["uncollapsed"] = {
+				["Init"] = function(_thisWidget: Types.Widget) end,
+				["Get"] = function(thisWidget: Types.Widget)
+					return thisWidget.lastUncollapsedTick == Iris._cycleTick
+				end,
+			},
+			["hovered"] = widgets.EVENTS.hover(function(thisWidget)
+				return thisWidget.Instance
+			end),
+		},
+		Discard = function(thisWidget: Types.Widget)
+			thisWidget.Instance:Destroy()
+			widgets.discardState(thisWidget)
+		end,
+		ChildAdded = function(thisWidget: Types.Widget, _otherWidget: Types.Widget)
+			local ChildContainer = thisWidget.ChildContainer :: Frame
 
-            ChildContainer.Visible = thisWidget.state.isUncollapsed.value
+			ChildContainer.Visible = thisWidget.state.isUncollapsed.value
 
-            return ChildContainer
-        end,
-        UpdateState = function(thisWidget: Types.Widget)
-            local isUncollapsed: boolean = thisWidget.state.isUncollapsed.value
-            local Tree = thisWidget.Instance :: Frame
-            local ChildContainer = thisWidget.ChildContainer :: Frame
-            local Header = Tree.Header :: Frame
-            local Button = Header.Button :: TextButton
-            local Arrow: ImageLabel = Button.Arrow
+			return ChildContainer
+		end,
+		UpdateState = function(thisWidget: Types.Widget)
+			local isUncollapsed: boolean = thisWidget.state.isUncollapsed.value
+			local Tree = thisWidget.Instance :: Frame
+			local ChildContainer = thisWidget.ChildContainer :: Frame
+			local Header = Tree.Header :: Frame
+			local Button = Header.Button :: TextButton
+			local Arrow: ImageLabel = Button.Arrow
 
-            Arrow.Image = (isUncollapsed and widgets.ICONS.DOWN_POINTING_TRIANGLE or widgets.ICONS.RIGHT_POINTING_TRIANGLE)
-            if isUncollapsed then
-                thisWidget.lastUncollapsedTick = Iris._cycleTick + 1
-            else
-                thisWidget.lastCollapsedTick = Iris._cycleTick + 1
-            end
+			Arrow.Image = (
+				isUncollapsed and widgets.ICONS.DOWN_POINTING_TRIANGLE or widgets.ICONS.RIGHT_POINTING_TRIANGLE
+			)
+			if isUncollapsed then
+				thisWidget.lastUncollapsedTick = Iris._cycleTick + 1
+			else
+				thisWidget.lastCollapsedTick = Iris._cycleTick + 1
+			end
 
-            ChildContainer.Visible = isUncollapsed
-        end,
-        GenerateState = function(thisWidget: Types.Widget)
-            if thisWidget.state.isUncollapsed == nil then
-                thisWidget.state.isUncollapsed = Iris._widgetState(thisWidget, "isUncollapsed", false)
-            end
-        end,
-    } :: Types.WidgetClass
+			ChildContainer.Visible = isUncollapsed
+		end,
+		GenerateState = function(thisWidget: Types.Widget)
+			if thisWidget.state.isUncollapsed == nil then
+				thisWidget.state.isUncollapsed = Iris._widgetState(thisWidget, "isUncollapsed", false)
+			end
+		end,
+	} :: Types.WidgetClass
 
     --stylua: ignore
     Iris.WidgetConstructor(

@@ -134,6 +134,12 @@ interface IrisInternal {
 	_GetParentWidget: () => Widget;
 	SetFocusedWindow: (thisWidget?: Widget) => void;
 
+	// Docking
+	DockSpace: (offset?: Vector2, size?: Vector2) => void;
+	DockWindow: (windowId: string, side?: string, targetWindowId?: string) => void;
+	UndockWindow: (windowId: string) => void;
+	IsWindowDocked: (windowId: string) => boolean;
+
 	// Generate
 	_generateEmptyVDOM: () => Record<WidgetID, Widget>;
 	_generateRootInstance: () => void;

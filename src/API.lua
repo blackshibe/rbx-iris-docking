@@ -91,6 +91,17 @@ return function(Iris: Types.Iris)
     Iris.SetFocusedWindow = Iris.Internal.SetFocusedWindow
 
     --[=[
+        @function DockSpace
+        @within Iris
+
+        Drives every docked window's layout for the current cycle. Call once per frame after all windows.
+    ]=]
+    Iris.DockSpace = Iris.Internal.DockSpace
+    Iris.DockWindow = Iris.Internal.DockWindow
+    Iris.UndockWindow = Iris.Internal.UndockWindow
+    Iris.IsWindowDocked = Iris.Internal.IsWindowDocked
+
+    --[=[
         @prop Tooltip Iris.Tooltip
         @within Window
         @tag Widget

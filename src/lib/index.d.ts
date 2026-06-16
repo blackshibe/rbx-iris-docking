@@ -94,6 +94,12 @@ declare namespace Iris {
 	// Widget
 	export function SetFocusedWindow(thisWidget: Widget): void;
 
+	// Docking
+	export function DockSpace(offset?: Vector2, size?: Vector2): void;
+	export function DockWindow(windowId: string, side?: "left" | "right" | "top" | "bottom" | "center", targetWindowId?: string): void;
+	export function UndockWindow(windowId: string): void;
+	export function IsWindowDocked(windowId: string): boolean;
+
 	// ID API
 	export function PushId(id: WidgetID): void;
 	export function PopId(id: WidgetID): void;

@@ -1,23 +1,28 @@
 local Types = require(script.Parent.Parent.Types)
 
 return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
-    local function relocateTooltips()
-        if Iris._rootInstance == nil then
-            return
-        end
-        local PopupScreenGui = Iris._rootInstance:FindFirstChild("PopupScreenGui")
-        local TooltipContainer = PopupScreenGui.TooltipContainer
-        local mouseLocation: Vector2 = widgets.getMouseLocation()
-        local newPosition: Vector2 = widgets.findBestWindowPosForPopup(mouseLocation, TooltipContainer.AbsoluteSize, Iris._config.DisplaySafeAreaPadding, PopupScreenGui.AbsoluteSize)
-        TooltipContainer.Position = UDim2.fromOffset(newPosition.X, newPosition.Y)
-    end
+	local function relocateTooltips()
+		if Iris._rootInstance == nil then
+			return
+		end
+		local PopupScreenGui = Iris._rootInstance:FindFirstChild("PopupScreenGui")
+		local TooltipContainer = PopupScreenGui.TooltipContainer
+		local mouseLocation: Vector2 = widgets.getMouseLocation()
+		local newPosition: Vector2 = widgets.findBestWindowPosForPopup(
+			mouseLocation,
+			TooltipContainer.AbsoluteSize,
+			Iris._config.DisplaySafeAreaPadding,
+			PopupScreenGui.AbsoluteSize
+		)
+		TooltipContainer.Position = UDim2.fromOffset(newPosition.X, newPosition.Y)
+	end
 
-    widgets.registerEvent("InputChanged", function()
-        if not Iris._started then
-            return
-        end
-        relocateTooltips()
-    end)
+	widgets.registerEvent("InputChanged", function()
+		if not Iris._started then
+			return
+		end
+		relocateTooltips()
+	end)
 
     --stylua: ignore
     Iris.WidgetConstructor("Tooltip", {
@@ -73,262 +78,400 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
         end,
     } :: Types.WidgetClass)
 
-    local windowDisplayOrder: number = 0 -- incremental count which is used for determining focused windows ZIndex
-    local dragWindow: Types.Widget? -- window being dragged, may be nil
-    local isDragging: boolean = false
-    local moveDeltaCursorPosition: Vector2 -- cursor offset from drag origin (top left of window)
+	local windowDisplayOrder: number = 0 -- incremental count which is used for determining focused windows ZIndex
+	local dragWindow: Types.Widget? -- window being dragged, may be nil
+	local isDragging: boolean = false
+	local moveDeltaCursorPosition: Vector2 -- cursor offset from drag origin (top left of window)
 
-    local resizeWindow: Types.Widget? -- window being resized, may be nil
-    local isResizing = false
-    local isInsideResize = false -- is cursor inside of the focused window resize outer padding
-    local isInsideWindow = false -- is cursor inside of the focused window
-    local resizeFromTopBottom: Enum.TopBottom = Enum.TopBottom.Top
-    local resizeFromLeftRight: Enum.LeftRight = Enum.LeftRight.Left
+	local resizeWindow: Types.Widget? -- window being resized, may be nil
+	local isResizing = false
+	local isInsideResize = false -- is cursor inside of the focused window resize outer padding
+	local isInsideWindow = false -- is cursor inside of the focused window
+	local resizeFromTopBottom: Enum.TopBottom = Enum.TopBottom.Top
+	local resizeFromLeftRight: Enum.LeftRight = Enum.LeftRight.Left
 
-    local lastCursorPosition: Vector2
+	local lastCursorPosition: Vector2 = Vector2.zero
 
-    local focusedWindow: Types.Widget? -- window with focus, may be nil
-    local anyFocusedWindow: boolean = false -- is there any focused window?
+	local focusedWindow: Types.Widget? -- window with focus, may be nil
+	local anyFocusedWindow: boolean = false -- is there any focused window?
 
-    local windowWidgets: { [Types.ID]: Types.Widget } = {} -- array of widget objects of type window
+	local windowWidgets: { [Types.ID]: Types.Widget } = {} -- array of widget objects of type window
+	Iris._windowWidgets = windowWidgets -- exposed so the docking layer can position/flag windows
 
-    local function quickSwapWindows()
-        -- ctrl + tab swapping functionality
-        if Iris._config.UseScreenGUIs == false then
-            return
-        end
+	local function quickSwapWindows()
+		-- ctrl + tab swapping functionality
+		if Iris._config.UseScreenGUIs == false then
+			return
+		end
 
-        local lowest: number = 0xFFFF
-        local lowestWidget: Types.Widget
+		local lowest: number = 0xFFFF
+		local lowestWidget: Types.Widget
 
-        for _, widget: Types.Widget in windowWidgets do
-            if widget.state.isOpened.value and not widget.arguments.NoNav then
-                if widget.Instance:IsA("ScreenGui") then
-                    local value: number = widget.Instance.DisplayOrder
-                    if value < lowest then
-                        lowest = value
-                        lowestWidget = widget
-                    end
-                end
-            end
-        end
+		for _, widget: Types.Widget in windowWidgets do
+			if widget.state.isOpened.value and not widget.arguments.NoNav then
+				if widget.Instance:IsA("ScreenGui") then
+					local value: number = widget.Instance.DisplayOrder
+					if value < lowest then
+						lowest = value
+						lowestWidget = widget
+					end
+				end
+			end
+		end
 
-        if not lowestWidget then
-            return
-        end
+		if not lowestWidget then
+			return
+		end
 
-        if lowestWidget.state.isUncollapsed.value == false then
-            lowestWidget.state.isUncollapsed:set(true)
-        end
-        Iris.SetFocusedWindow(lowestWidget)
-    end
+		if lowestWidget.state.isUncollapsed.value == false then
+			lowestWidget.state.isUncollapsed:set(true)
+		end
+		Iris.SetFocusedWindow(lowestWidget)
+	end
 
-    local function fitSizeToWindowBounds(thisWidget: Types.Widget, intentedSize: Vector2): Vector2
-        local windowSize: Vector2 = Vector2.new(thisWidget.state.position.value.X, thisWidget.state.position.value.Y)
-        local minWindowSize: number = (Iris._config.TextSize + 2 * Iris._config.FramePadding.Y) * 2
-        local usableSize: Vector2 = widgets.getScreenSizeForWindow(thisWidget)
-        local safeAreaPadding: Vector2 = Vector2.new(Iris._config.WindowBorderSize + Iris._config.DisplaySafeAreaPadding.X, Iris._config.WindowBorderSize + Iris._config.DisplaySafeAreaPadding.Y)
+	local function fitSizeToWindowBounds(thisWidget: Types.Widget, intentedSize: Vector2): Vector2
+		local windowSize: Vector2 = Vector2.new(thisWidget.state.position.value.X, thisWidget.state.position.value.Y)
+		local minWindowSize: number = (Iris._config.TextSize + 2 * Iris._config.FramePadding.Y) * 2
+		local usableSize: Vector2 = widgets.getScreenSizeForWindow(thisWidget)
+		local safeAreaPadding: Vector2 = Vector2.new(
+			Iris._config.WindowBorderSize + Iris._config.DisplaySafeAreaPadding.X,
+			Iris._config.WindowBorderSize + Iris._config.DisplaySafeAreaPadding.Y
+		)
 
-        local maxWindowSize: Vector2 = (usableSize - windowSize - safeAreaPadding)
-        return Vector2.new(math.clamp(intentedSize.X, minWindowSize, math.max(maxWindowSize.X, minWindowSize)), math.clamp(intentedSize.Y, minWindowSize, math.max(maxWindowSize.Y, minWindowSize)))
-    end
+		local maxWindowSize: Vector2 = (usableSize - windowSize - safeAreaPadding)
+		return Vector2.new(
+			math.clamp(intentedSize.X, minWindowSize, math.max(maxWindowSize.X, minWindowSize)),
+			math.clamp(intentedSize.Y, minWindowSize, math.max(maxWindowSize.Y, minWindowSize))
+		)
+	end
 
-    local function fitPositionToWindowBounds(thisWidget: Types.Widget, intendedPosition: Vector2): Vector2
-        local thisWidgetInstance = thisWidget.Instance
-        local usableSize: Vector2 = widgets.getScreenSizeForWindow(thisWidget)
-        local safeAreaPadding: Vector2 = Vector2.new(Iris._config.WindowBorderSize + Iris._config.DisplaySafeAreaPadding.X, Iris._config.WindowBorderSize + Iris._config.DisplaySafeAreaPadding.Y)
+	local function fitPositionToWindowBounds(thisWidget: Types.Widget, intendedPosition: Vector2): Vector2
+		local thisWidgetInstance = thisWidget.Instance
+		local usableSize: Vector2 = widgets.getScreenSizeForWindow(thisWidget)
+		local safeAreaPadding: Vector2 = Vector2.new(
+			Iris._config.WindowBorderSize + Iris._config.DisplaySafeAreaPadding.X,
+			Iris._config.WindowBorderSize + Iris._config.DisplaySafeAreaPadding.Y
+		)
 
-        return Vector2.new(
-            math.clamp(intendedPosition.X, safeAreaPadding.X, math.max(safeAreaPadding.X, usableSize.X - thisWidgetInstance.WindowButton.AbsoluteSize.X - safeAreaPadding.X)),
-            math.clamp(intendedPosition.Y, safeAreaPadding.Y, math.max(safeAreaPadding.Y, usableSize.Y - thisWidgetInstance.WindowButton.AbsoluteSize.Y - safeAreaPadding.Y))
-        )
-    end
+		return Vector2.new(
+			math.clamp(
+				intendedPosition.X,
+				safeAreaPadding.X,
+				math.max(
+					safeAreaPadding.X,
+					usableSize.X - thisWidgetInstance.WindowButton.AbsoluteSize.X - safeAreaPadding.X
+				)
+			),
+			math.clamp(
+				intendedPosition.Y,
+				safeAreaPadding.Y,
+				math.max(
+					safeAreaPadding.Y,
+					usableSize.Y - thisWidgetInstance.WindowButton.AbsoluteSize.Y - safeAreaPadding.Y
+				)
+			)
+		)
+	end
 
-    Iris.SetFocusedWindow = function(thisWidget: Types.Widget?)
-        if focusedWindow == thisWidget then
-            return
-        end
+	Iris.SetFocusedWindow = function(thisWidget: Types.Widget?)
+		if focusedWindow == thisWidget then
+			return
+		end
 
-        if anyFocusedWindow and focusedWindow ~= nil then
-            if windowWidgets[focusedWindow.ID] then
-                local Window = focusedWindow.Instance :: Frame
-                local WindowButton = Window.WindowButton :: TextButton
-                local Content = WindowButton.Content :: Frame
-                local TitleBar: Frame = Content.TitleBar
-                -- update appearance to unfocus
-                if focusedWindow.state.isUncollapsed.value then
-                    TitleBar.BackgroundColor3 = Iris._config.TitleBgColor
-                    TitleBar.BackgroundTransparency = Iris._config.TitleBgTransparency
-                else
-                    TitleBar.BackgroundColor3 = Iris._config.TitleBgCollapsedColor
-                    TitleBar.BackgroundTransparency = Iris._config.TitleBgCollapsedTransparency
-                end
-                WindowButton.UIStroke.Color = Iris._config.BorderColor
-            end
+		if anyFocusedWindow and focusedWindow ~= nil then
+			if windowWidgets[focusedWindow.ID] then
+				local Window = focusedWindow.Instance :: Frame
+				local WindowButton = Window.WindowButton :: TextButton
+				local Content = WindowButton.Content :: Frame
+				local TitleBar: Frame = Content.TitleBar
+				-- update appearance to unfocus
+				if focusedWindow.state.isUncollapsed.value then
+					TitleBar.BackgroundColor3 = Iris._config.TitleBgColor
+					TitleBar.BackgroundTransparency = Iris._config.TitleBgTransparency
+				else
+					TitleBar.BackgroundColor3 = Iris._config.TitleBgCollapsedColor
+					TitleBar.BackgroundTransparency = Iris._config.TitleBgCollapsedTransparency
+				end
+				WindowButton.UIStroke.Color = Iris._config.BorderColor
+			end
 
-            anyFocusedWindow = false
-            focusedWindow = nil
-        end
+			anyFocusedWindow = false
+			focusedWindow = nil
+		end
 
-        if thisWidget ~= nil then
-            -- update appearance to focus
-            anyFocusedWindow = true
-            focusedWindow = thisWidget
-            local Window = thisWidget.Instance :: Frame
-            local WindowButton = Window.WindowButton :: TextButton
-            local Content = WindowButton.Content :: Frame
-            local TitleBar: Frame = Content.TitleBar
+		if thisWidget ~= nil then
+			-- update appearance to focus
+			anyFocusedWindow = true
+			focusedWindow = thisWidget
+			local Window = thisWidget.Instance :: Frame
+			local WindowButton = Window.WindowButton :: TextButton
+			local Content = WindowButton.Content :: Frame
+			local TitleBar: Frame = Content.TitleBar
 
-            TitleBar.BackgroundColor3 = Iris._config.TitleBgActiveColor
-            TitleBar.BackgroundTransparency = Iris._config.TitleBgActiveTransparency
-            WindowButton.UIStroke.Color = Iris._config.BorderActiveColor
+			TitleBar.BackgroundColor3 = Iris._config.TitleBgActiveColor
+			TitleBar.BackgroundTransparency = Iris._config.TitleBgActiveTransparency
+			WindowButton.UIStroke.Color = Iris._config.BorderActiveColor
 
-            windowDisplayOrder += 1
-            if thisWidget.usesScreenGUI then
-                Window.DisplayOrder = windowDisplayOrder + Iris._config.DisplayOrderOffset
-            else
-                Window.ZIndex = windowDisplayOrder + Iris._config.DisplayOrderOffset
-            end
+			windowDisplayOrder += 1
+			if thisWidget.usesScreenGUI then
+				Window.DisplayOrder = windowDisplayOrder + Iris._config.DisplayOrderOffset
+			else
+				Window.ZIndex = windowDisplayOrder + Iris._config.DisplayOrderOffset
+			end
 
-            if thisWidget.state.isUncollapsed.value == false then
-                thisWidget.state.isUncollapsed:set(true)
-            end
+			if thisWidget.state.isUncollapsed.value == false then
+				thisWidget.state.isUncollapsed:set(true)
+			end
 
-            local firstSelectedObject: GuiObject? = widgets.GuiService.SelectedObject
-            if firstSelectedObject then
-                if TitleBar.Visible then
-                    widgets.GuiService:Select(TitleBar)
-                else
-                    widgets.GuiService:Select(thisWidget.ChildContainer)
-                end
-            end
-        end
-    end
+			local firstSelectedObject: GuiObject? = widgets.GuiService.SelectedObject
+			if firstSelectedObject then
+				if TitleBar.Visible then
+					widgets.GuiService:Select(TitleBar)
+				else
+					widgets.GuiService:Select(thisWidget.ChildContainer)
+				end
+			end
+		end
+	end
 
-    widgets.registerEvent("InputBegan", function(input: InputObject)
-        if not Iris._started then
-            return
-        end
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            local inWindow: boolean = false
-            local position: Vector2 = widgets.getMouseLocation()
-            for _, window in windowWidgets do
-                local ResizeBorder: TextButton = window.Instance and window.Instance.WindowButton.ResizeBorder
-                if ResizeBorder and widgets.isPosInsideRect(position, ResizeBorder.AbsolutePosition - widgets.GuiOffset, ResizeBorder.AbsolutePosition - widgets.GuiOffset + ResizeBorder.AbsoluteSize) then
-                    inWindow = true
-                    break
-                end
-            end
+	widgets.registerEvent("InputBegan", function(input: InputObject)
+		if not Iris._started then
+			return
+		end
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			local inWindow: boolean = false
+			local position: Vector2 = widgets.getMouseLocation()
+			for _, window in windowWidgets do
+				local ResizeBorder: TextButton = window.Instance and window.Instance.WindowButton.ResizeBorder
+				if
+					ResizeBorder
+					and widgets.isPosInsideRect(
+						position,
+						ResizeBorder.AbsolutePosition - widgets.GuiOffset,
+						ResizeBorder.AbsolutePosition - widgets.GuiOffset + ResizeBorder.AbsoluteSize
+					)
+				then
+					inWindow = true
+					break
+				end
+			end
 
-            if not inWindow then
-                Iris.SetFocusedWindow(nil)
-            end
-        end
+			if not inWindow then
+				Iris.SetFocusedWindow(nil)
+			end
+		end
 
-        if input.KeyCode == Enum.KeyCode.Tab and (widgets.UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or widgets.UserInputService:IsKeyDown(Enum.KeyCode.RightControl)) then
-            quickSwapWindows()
-        end
+		if
+			input.KeyCode == Enum.KeyCode.Tab
+			and (
+				widgets.UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+				or widgets.UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+			)
+		then
+			quickSwapWindows()
+		end
 
-        if input.UserInputType == Enum.UserInputType.MouseButton1 and isInsideResize and not isInsideWindow and anyFocusedWindow and focusedWindow then
-            local midWindow: Vector2 = focusedWindow.state.position.value + (focusedWindow.state.size.value / 2)
-            local cursorPosition: Vector2 = widgets.getMouseLocation() - midWindow
+		if
+			input.UserInputType == Enum.UserInputType.MouseButton1
+			and isInsideResize
+			and not isInsideWindow
+			and anyFocusedWindow
+			and focusedWindow
+			and focusedWindow.dockId == nil
+		then
+			local midWindow: Vector2 = focusedWindow.state.position.value + (focusedWindow.state.size.value / 2)
+			local cursorPosition: Vector2 = widgets.getMouseLocation() - midWindow
 
-            -- check which axis its closest to, then check which side is closest with math.sign
-            if math.abs(cursorPosition.X) * focusedWindow.state.size.value.Y >= math.abs(cursorPosition.Y) * focusedWindow.state.size.value.X then
-                resizeFromTopBottom = Enum.TopBottom.Center
-                resizeFromLeftRight = if math.sign(cursorPosition.X) == -1 then Enum.LeftRight.Left else Enum.LeftRight.Right
-            else
-                resizeFromLeftRight = Enum.LeftRight.Center
-                resizeFromTopBottom = if math.sign(cursorPosition.Y) == -1 then Enum.TopBottom.Top else Enum.TopBottom.Bottom
-            end
-            isResizing = true
-            resizeWindow = focusedWindow
-        end
-    end)
+			-- check which axis its closest to, then check which side is closest with math.sign
+			if
+				math.abs(cursorPosition.X) * focusedWindow.state.size.value.Y
+				>= math.abs(cursorPosition.Y) * focusedWindow.state.size.value.X
+			then
+				resizeFromTopBottom = Enum.TopBottom.Center
+				resizeFromLeftRight = if math.sign(cursorPosition.X) == -1
+					then Enum.LeftRight.Left
+					else Enum.LeftRight.Right
+			else
+				resizeFromLeftRight = Enum.LeftRight.Center
+				resizeFromTopBottom = if math.sign(cursorPosition.Y) == -1
+					then Enum.TopBottom.Top
+					else Enum.TopBottom.Bottom
+			end
+			isResizing = true
+			resizeWindow = focusedWindow
+		end
+	end)
 
-    widgets.registerEvent("TouchTapInWorld", function(_, gameProcessedEvent: boolean)
-        if not Iris._started then
-            return
-        end
-        if not gameProcessedEvent then
-            Iris.SetFocusedWindow(nil)
-        end
-    end)
+	widgets.registerEvent("TouchTapInWorld", function(_, gameProcessedEvent: boolean)
+		if not Iris._started then
+			return
+		end
+		if not gameProcessedEvent then
+			Iris.SetFocusedWindow(nil)
+		end
+	end)
 
-    widgets.registerEvent("InputChanged", function(input: InputObject)
-        if not Iris._started then
-            return
-        end
-        if isDragging and dragWindow then
-            local mouseLocation: Vector2
-            if input.UserInputType == Enum.UserInputType.Touch then
-                local location: Vector3 = input.Position
-                mouseLocation = Vector2.new(location.X, location.Y)
-            else
-                mouseLocation = widgets.getMouseLocation()
-            end
-            local Window = dragWindow.Instance :: Frame
-            local dragInstance: TextButton = Window.WindowButton
-            local intendedPosition: Vector2 = mouseLocation - moveDeltaCursorPosition
-            local newPos: Vector2 = fitPositionToWindowBounds(dragWindow, intendedPosition)
+	-- UserInputService events do NOT fire over a plugin DockWidgetPluginGui, so in a plugin
+	-- the move/resize update and release are driven by a full-screen capture button (its
+	-- GuiObject input events DO fire there). In a normal game the UserInputService path below
+	-- is used and the catcher is never shown, so the two never double-drive.
+	local showDragCatcher -- forward declaration
 
-            -- state shouldnt be used like this, but calling :set would run the entire UpdateState function for the window, which is slow.
-            dragInstance.Position = UDim2.fromOffset(newPos.X, newPos.Y)
-            dragWindow.state.position.value = newPos
-        end
-        if isResizing and resizeWindow and resizeWindow.arguments.NoResize ~= true then
-            local Window = resizeWindow.Instance :: Frame
-            local resizeInstance: TextButton = Window.WindowButton
-            local windowPosition: Vector2 = Vector2.new(resizeInstance.Position.X.Offset, resizeInstance.Position.Y.Offset)
-            local windowSize: Vector2 = Vector2.new(resizeInstance.Size.X.Offset, resizeInstance.Size.Y.Offset)
+	-- input is nil when called from the per-frame plugin pump (mouse only); an InputObject
+	-- when called from the UserInputService path in a normal game.
+	local function processDragResize(input: InputObject?)
+		if not Iris._started then
+			return
+		end
+		if isDragging and dragWindow then
+			local mouseLocation: Vector2
+			if input and input.UserInputType == Enum.UserInputType.Touch then
+				local location: Vector3 = input.Position
+				mouseLocation = Vector2.new(location.X, location.Y)
+			else
+				mouseLocation = widgets.getMouseLocation()
+			end
+			local Window = dragWindow.Instance :: Frame
+			local dragInstance: TextButton = Window.WindowButton
+			local intendedPosition: Vector2 = mouseLocation - moveDeltaCursorPosition
+			local newPos: Vector2 = fitPositionToWindowBounds(dragWindow, intendedPosition)
 
-            local mouseDelta: Vector2 | Vector3
-            if input.UserInputType == Enum.UserInputType.Touch then
-                mouseDelta = input.Delta
-            else
-                mouseDelta = widgets.getMouseLocation() - lastCursorPosition
-            end
+			-- state shouldnt be used like this, but calling :set would run the entire UpdateState function for the window, which is slow.
+			dragInstance.Position = UDim2.fromOffset(newPos.X, newPos.Y)
+			dragWindow.state.position.value = newPos
+		end
+		if isResizing and resizeWindow and resizeWindow.arguments.NoResize ~= true then
+			local Window = resizeWindow.Instance :: Frame
+			local resizeInstance: TextButton = Window.WindowButton
+			local windowPosition: Vector2 =
+				Vector2.new(resizeInstance.Position.X.Offset, resizeInstance.Position.Y.Offset)
+			local windowSize: Vector2 = Vector2.new(resizeInstance.Size.X.Offset, resizeInstance.Size.Y.Offset)
 
-            local intendedPosition: Vector2 = windowPosition + Vector2.new(if resizeFromLeftRight == Enum.LeftRight.Left then mouseDelta.X else 0, if resizeFromTopBottom == Enum.TopBottom.Top then mouseDelta.Y else 0)
+			local mouseDelta: Vector2 | Vector3
+			if input and input.UserInputType == Enum.UserInputType.Touch then
+				mouseDelta = input.Delta
+			else
+				mouseDelta = widgets.getMouseLocation() - lastCursorPosition
+			end
 
-            local intendedSize: Vector2 = windowSize
-                + Vector2.new(
-                    if resizeFromLeftRight == Enum.LeftRight.Left then -mouseDelta.X elseif resizeFromLeftRight == Enum.LeftRight.Right then mouseDelta.X else 0,
-                    if resizeFromTopBottom == Enum.TopBottom.Top then -mouseDelta.Y elseif resizeFromTopBottom == Enum.TopBottom.Bottom then mouseDelta.Y else 0
-                )
+			local intendedPosition: Vector2 = windowPosition
+				+ Vector2.new(
+					if resizeFromLeftRight == Enum.LeftRight.Left then mouseDelta.X else 0,
+					if resizeFromTopBottom == Enum.TopBottom.Top then mouseDelta.Y else 0
+				)
 
-            local newSize: Vector2 = fitSizeToWindowBounds(resizeWindow, intendedSize)
-            local newPosition: Vector2 = fitPositionToWindowBounds(resizeWindow, intendedPosition)
+			local intendedSize: Vector2 = windowSize
+				+ Vector2.new(
+					if resizeFromLeftRight == Enum.LeftRight.Left
+						then -mouseDelta.X
+						elseif resizeFromLeftRight == Enum.LeftRight.Right then mouseDelta.X
+						else 0,
+					if resizeFromTopBottom == Enum.TopBottom.Top
+						then -mouseDelta.Y
+						elseif resizeFromTopBottom == Enum.TopBottom.Bottom then mouseDelta.Y
+						else 0
+				)
 
-            resizeInstance.Size = UDim2.fromOffset(newSize.X, newSize.Y)
-            resizeWindow.state.size.value = newSize
-            resizeInstance.Position = UDim2.fromOffset(newPosition.X, newPosition.Y)
-            resizeWindow.state.position.value = newPosition
-        end
+			local newSize: Vector2 = fitSizeToWindowBounds(resizeWindow, intendedSize)
+			local newPosition: Vector2 = fitPositionToWindowBounds(resizeWindow, intendedPosition)
 
-        lastCursorPosition = widgets.getMouseLocation()
-    end)
+			resizeInstance.Size = UDim2.fromOffset(newSize.X, newSize.Y)
+			resizeWindow.state.size.value = newSize
+			resizeInstance.Position = UDim2.fromOffset(newPosition.X, newPosition.Y)
+			resizeWindow.state.position.value = newPosition
+		end
 
-    widgets.registerEvent("InputEnded", function(input, _)
-        if not Iris._started then
-            return
-        end
-        if (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) and isDragging and dragWindow then
-            local Window = dragWindow.Instance :: Frame
-            local dragInstance: TextButton = Window.WindowButton
-            isDragging = false
-            dragWindow.state.position:set(Vector2.new(dragInstance.Position.X.Offset, dragInstance.Position.Y.Offset))
-        end
-        if (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) and isResizing and resizeWindow then
-            local Window = resizeWindow.Instance :: Frame
-            isResizing = false
-            resizeWindow.state.size:set(Window.WindowButton.AbsoluteSize)
-        end
+		lastCursorPosition = widgets.getMouseLocation()
+	end
 
-        if input.KeyCode == Enum.KeyCode.ButtonX then
-            quickSwapWindows()
-        end
-    end)
+	local function processInputEnded(input: InputObject)
+		if not Iris._started then
+			return
+		end
+		if
+			(input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch)
+			and isDragging
+			and dragWindow
+		then
+			local Window = dragWindow.Instance :: Frame
+			local dragInstance: TextButton = Window.WindowButton
+			isDragging = false
+			dragWindow.state.position:set(Vector2.new(dragInstance.Position.X.Offset, dragInstance.Position.Y.Offset))
+		end
+		if
+			(input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch)
+			and isResizing
+			and resizeWindow
+		then
+			local Window = resizeWindow.Instance :: Frame
+			isResizing = false
+			resizeWindow.state.size:set(Window.WindowButton.AbsoluteSize)
+		end
+
+		if input.KeyCode == Enum.KeyCode.ButtonX then
+			quickSwapWindows()
+		end
+		showDragCatcher(false)
+	end
+
+	-- full-screen capture button (plugin only); created lazily once the root exists.
+	local dragCatcher: TextButton? = nil
+	local function getDragCatcher(): TextButton?
+		if dragCatcher and dragCatcher.Parent then
+			return dragCatcher
+		end
+		local root = Iris._rootInstance
+		local popup: Instance? = root and root:FindFirstChild("PopupScreenGui")
+		if popup == nil then
+			return nil
+		end
+		local catcher: TextButton = Instance.new("TextButton")
+		catcher.Name = "WindowDragCatcher"
+		catcher.Text = ""
+		catcher.AutoButtonColor = false
+		catcher.BackgroundTransparency = 1
+		catcher.BorderSizePixel = 0
+		catcher.Size = UDim2.fromScale(1, 1)
+		catcher.Visible = false
+		catcher.ZIndex = 2_000_000
+		catcher.Parent = popup
+		-- only InputEnded is reliable on a GuiObject in a plugin (InputChanged for mouse-move
+		-- is not — same reason UserInputService fails), so movement is driven by the pump below.
+		catcher.InputEnded:Connect(function(input: InputObject)
+			print("[DOCK] window catcher InputEnded", input.UserInputType, "drag=", isDragging, "resize=", isResizing)
+			processInputEnded(input)
+		end)
+		dragCatcher = catcher
+		return catcher
+	end
+	function showDragCatcher(on: boolean)
+		if Iris._pluginGui == nil then
+			return -- game context drives move/resize through UserInputService directly
+		end
+		print("[DOCK] window showDragCatcher", on)
+		if on then
+			-- seed so the first resize frame has a ~zero delta instead of a jump
+			lastCursorPosition = widgets.getMouseLocation()
+		end
+		local catcher: TextButton? = getDragCatcher()
+		if catcher then
+			catcher.Visible = on
+		end
+	end
+
+	widgets.registerEvent("InputChanged", processDragResize)
+	widgets.registerEvent("InputEnded", processInputEnded)
+
+	-- plugin pump: UserInputService never fires over a plugin widget, so while a drag/resize
+	-- is active we update it every frame from the mouse position (which getMouseLocation reads
+	-- via GetRelativeMousePosition). Disabled in a normal game, where UserInputService drives it.
+	game:GetService("RunService").Heartbeat:Connect(function()
+		if Iris._pluginGui == nil or not (isDragging or isResizing) then
+			return
+		end
+		print("[DOCK] window pump drag=", isDragging, "resize=", isResizing, "mouse=", widgets.getMouseLocation())
+		processDragResize(nil)
+	end)
 
     --stylua: ignore
     Iris.WidgetConstructor("Window", {
@@ -427,10 +570,11 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
                 if thisWidget.state.isUncollapsed.value then
                     Iris.SetFocusedWindow(thisWidget)
                 end
-                if not thisWidget.arguments.NoMove and input.UserInputType == Enum.UserInputType.MouseButton1 then
+                if not thisWidget.arguments.NoMove and thisWidget.dockId == nil and input.UserInputType == Enum.UserInputType.MouseButton1 then
                     dragWindow = thisWidget
                     isDragging = true
                     moveDeltaCursorPosition = widgets.getMouseLocation() - thisWidget.state.position.value
+                    showDragCatcher(true)
                 end
             end)
 
@@ -512,9 +656,10 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
             widgets.UIListLayout(TitleBar, Enum.FillDirection.Horizontal, UDim.new(0, Iris._config.FramePadding.X)).VerticalAlignment = Enum.VerticalAlignment.Center
             widgets.applyInputBegan(thisWidget, TitleBar, function(input: InputObject)
                 if input.UserInputType == Enum.UserInputType.Touch then
-                    if not thisWidget.arguments.NoMove then
+                    if not thisWidget.arguments.NoMove and thisWidget.dockId == nil then
                         dragWindow = thisWidget
                         isDragging = true
+                        showDragCatcher(true)
                         local location: Vector3 = input.Position
                         moveDeltaCursorPosition = Vector2.new(location.X, location.Y) - thisWidget.state.position.value
                     end
@@ -654,6 +799,9 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
             })
 
             widgets.applyButtonDown(thisWidget, ResizeGrip, function()
+                if thisWidget.dockId ~= nil then
+                    return
+                end
                 if not anyFocusedWindow or not (focusedWindow == thisWidget) then
                     Iris.SetFocusedWindow(thisWidget)
                     -- mitigating wrong focus when clicking on buttons inside of a window without clicking the window itself
@@ -662,6 +810,7 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
                 resizeFromTopBottom = Enum.TopBottom.Bottom
                 resizeFromLeftRight = Enum.LeftRight.Right
                 resizeWindow = thisWidget
+                showDragCatcher(true)
             end)
 
             local ResizeBorder: Frame = Instance.new("Frame")
@@ -710,7 +859,7 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
             local MenuBar: Frame? = Content:FindFirstChild("MenuBar")
             local ResizeGrip: TextButton = WindowButton.ResizeGrip
 
-            if thisWidget.arguments.NoResize ~= true then
+            if thisWidget.arguments.NoResize ~= true and thisWidget.dockId == nil then
                 ResizeGrip.Visible = true
             else
                 ResizeGrip.Visible = false
@@ -720,7 +869,7 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
             else
                 ChildContainer.ScrollBarThickness = Iris._config.ScrollbarSize
             end
-            if thisWidget.arguments.NoTitleBar then
+            if thisWidget.arguments.NoTitleBar or thisWidget.dockId ~= nil then
                 TitleBar.Visible = false
             else
                 TitleBar.Visible = true
@@ -825,7 +974,7 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
                     MenuBar.Visible = not thisWidget.arguments.NoMenu
                 end
                 ChildContainer.Visible = true
-                if thisWidget.arguments.NoResize ~= true then
+                if thisWidget.arguments.NoResize ~= true and thisWidget.dockId == nil then
                     ResizeGrip.Visible = true
                 end
                 WindowButton.AutomaticSize = Enum.AutomaticSize.None

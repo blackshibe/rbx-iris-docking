@@ -142,6 +142,9 @@ export type Widget = {
 
     usesScreenGUI: boolean,
 
+    -- Docking: set by the dock layer when this window is docked.
+    dockId: string?,
+
     -- Combo & Table properties
     ButtonColors: { [string]: Color3 | number },
 
@@ -332,6 +335,12 @@ export type Iris = {
     -- Widget
     SetFocusedWindow: (thisWidget: Widget?) -> (),
 
+    -- Docking
+    DockSpace: (offset: Vector2?, size: Vector2?) -> (),
+    DockWindow: (windowId: string, side: string?, targetWindowId: string?) -> (),
+    UndockWindow: (windowId: string) -> (),
+    IsWindowDocked: (windowId: string) -> boolean,
+
     -- ID API
     PushId: (id: ID) -> (),
     PopId: (id: ID) -> (),
@@ -382,6 +391,7 @@ export type Internal = {
     _lastWidget: Widget,
     SelectionImageObject: Frame,
     parentInstance: BasePlayerGui,
+    _pluginGui: PluginGui?,
     _utility: WidgetUtility,
 
     -- Config
@@ -441,6 +451,13 @@ export type Internal = {
     _EventCall: (thisWidget: Widget, eventName: string) -> boolean,
     _GetParentWidget: () -> Widget,
     SetFocusedWindow: (thisWidget: Widget?) -> (),
+
+    -- Docking
+    DockSpace: (offset: Vector2?, size: Vector2?) -> (),
+    DockWindow: (windowId: string, side: string?, targetWindowId: string?) -> (),
+    UndockWindow: (windowId: string) -> (),
+    IsWindowDocked: (windowId: string) -> boolean,
+    _dock: any,
 
     -- Generate
     _generateEmptyVDOM: () -> { [ID]: Widget },

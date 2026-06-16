@@ -80,6 +80,12 @@ function Iris.Init(parentInstance: BasePlayerGui?, eventConnection: (RBXScriptSi
         eventConnection = game:GetService("RunService").Heartbeat
     end
     Internal.parentInstance = parentInstance :: BasePlayerGui
+    
+    -- when hosted inside a plugin DockWidgetPluginGui, mouse input must be read
+    -- relative to the widget rather than from the global UserInputService.
+    if typeof(parentInstance) == "Instance" and parentInstance:IsA("PluginGui") then
+        Internal._pluginGui = parentInstance :: PluginGui
+    end
     Internal._started = true
 
     Internal._generateRootInstance()

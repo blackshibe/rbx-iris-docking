@@ -44,6 +44,11 @@ return function(Iris: Types.Internal)
     end)
 
     function widgets.getMouseLocation(): Vector2
+        -- inside a plugin widget the mouse is read relative to the widget; everything
+        -- else (window positions, AbsolutePosition) is already widget-relative there.
+        if Iris._pluginGui then
+            return Iris._pluginGui:GetRelativeMousePosition()
+        end
         return widgets.UserInputService:GetMouseLocation() - widgets.MouseOffset
     end
 
@@ -520,6 +525,7 @@ return function(Iris: Types.Internal)
 
     require(script.Root)(Iris, widgets)
     require(script.Window)(Iris, widgets)
+    require(script.Docking)(Iris, widgets)
 
     require(script.Menu)(Iris, widgets)
 
