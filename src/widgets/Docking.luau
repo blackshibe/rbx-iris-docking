@@ -11,7 +11,7 @@
 local Types = require(script.Parent.Parent.Types)
 
 return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
-    print("[DOCK] Docking.luau loaded — build v19 (instrumented)")
+    print("[DOCK] Docking.luau loaded — build v24 (region drop zones)")
     local TAB_HEIGHT = 24
     local GUTTER = 2 -- visible gap between panels
     local GRAB = 7 -- splitter mouse hit-area (wider than the visible gutter)
@@ -37,6 +37,9 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
         splitters = {} :: { [string]: TextButton }, -- splitId -> splitter handle
         activeSplitter = nil :: string?,
         dragCatcher = nil :: TextButton?, -- full-screen capture button shown while dragging
+        dragWindowId = nil :: string?, -- id of the floating window currently being dragged (set by Window.luau)
+        hoverDrop = nil :: { leafId: string?, side: string }?, -- drop target under the cursor this frame
+        overlay = nil :: any, -- lazily-built drop-zone overlay instances
     }
     Iris._dock = dock
 
@@ -229,6 +232,10 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
             local step: number = ((dock.undockCascade - 1) % 8) * 28
             widget.state.position:set(Vector2.new(80 + step, 80 + step))
             widget.state.size:set(Vector2.new(420, 320))
+            -- the dock pinned this window's ZIndex to the docked band; SetFocusedWindow raises it
+            -- back to the floating band, but it early-outs if the window is already focused, so
+            -- clear focus first to guarantee the re-raise above the dock surface.
+            Iris.SetFocusedWindow(nil)
             Iris.SetFocusedWindow(widget)
         end
     end
@@ -395,6 +402,203 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
         print("[DOCK] drag(frame)", dock.activeSplitter, "mouse=", mouse, "ratio=", string.format("%.3f", node.ratio))
     end
 
+    -- imgui-style drop-zone overlay --------------------------------------------------
+    -- While a floating window is dragged over the dockspace we show a 5-way target (centre +
+    -- four directions) for the leaf under the cursor and a translucent preview of where the
+    -- window would land. Detection is pure math against the cached leaf rects in the same
+    -- coordinate space getMouseLocation() reports (verified by the splitter drag), so it does
+    -- not rely on GuiObject input (unreliable over a plugin widget). The overlay lives in
+    -- PopupScreenGui so it draws above the dragged window (which sits in the window layer).
+    local ZONE = 34 -- drop-zone marker size (px)
+    local ZONE_GAP = 8 -- gap between the centre marker and the directional ones
+    local ZONE_COLOR = Color3.fromRGB(38, 143, 255)
+
+    local function rectContains(p: Vector2, pos: Vector2, size: Vector2): boolean
+        return p.X >= pos.X and p.X <= pos.X + size.X and p.Y >= pos.Y and p.Y <= pos.Y + size.Y
+    end
+
+    local function newZoneMarker(parent: Instance, z: number): Frame
+        local m = Instance.new("Frame")
+        m.BorderSizePixel = 0
+        m.BackgroundColor3 = ZONE_COLOR
+        m.BackgroundTransparency = 0.5
+        m.Size = UDim2.fromOffset(ZONE, ZONE)
+        m.ZIndex = z
+        m.Visible = false
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = Color3.fromRGB(255, 255, 255)
+        stroke.Transparency = 0.3
+        stroke.Thickness = 1
+        stroke.Parent = m
+        widgets.UICorner(m, 4)
+        m.Parent = parent
+        return m
+    end
+
+    local function ensureOverlay()
+        if dock.overlay and dock.overlay.root.Parent then
+            return dock.overlay
+        end
+        local popup = Iris._rootInstance and Iris._rootInstance:FindFirstChild("PopupScreenGui")
+        if popup == nil then
+            return nil
+        end
+        local root = Instance.new("Frame")
+        root.Name = "IrisDockOverlay"
+        root.BackgroundTransparency = 1
+        root.BorderSizePixel = 0
+        root.Size = UDim2.fromScale(1, 1)
+        root.ZIndex = 1_500_000
+        root.Visible = false
+        root.Parent = popup
+
+        local preview = Instance.new("Frame")
+        preview.Name = "Preview"
+        preview.BorderSizePixel = 0
+        preview.BackgroundColor3 = ZONE_COLOR
+        preview.BackgroundTransparency = 0.7
+        preview.ZIndex = 1_500_000
+        preview.Visible = false
+        preview.Parent = root
+
+        local markers = {
+            center = newZoneMarker(root, 1_500_002),
+            left = newZoneMarker(root, 1_500_002),
+            right = newZoneMarker(root, 1_500_002),
+            top = newZoneMarker(root, 1_500_002),
+            bottom = newZoneMarker(root, 1_500_002),
+        }
+        dock.overlay = { root = root, preview = preview, markers = markers }
+        return dock.overlay
+    end
+
+    -- the screen region a window would occupy if dropped on `side` of `rect`
+    local function previewRegion(rect: { pos: Vector2, size: Vector2 }, side: string): (Vector2, Vector2)
+        local p, s = rect.pos, rect.size
+        if side == "left" then
+            return p, Vector2.new(s.X / 2, s.Y)
+        elseif side == "right" then
+            return p + Vector2.new(s.X / 2, 0), Vector2.new(s.X / 2, s.Y)
+        elseif side == "top" then
+            return p, Vector2.new(s.X, s.Y / 2)
+        elseif side == "bottom" then
+            return p + Vector2.new(0, s.Y / 2), Vector2.new(s.X, s.Y / 2)
+        end
+        return p, s -- center: whole leaf
+    end
+
+    local function updateDockOverlay(container: Frame)
+        local overlay = ensureOverlay()
+        if overlay == nil then
+            return
+        end
+        if dock.dragWindowId == nil then
+            overlay.root.Visible = false
+            dock.hoverDrop = nil
+            return
+        end
+        overlay.root.Visible = true
+        local mouse: Vector2 = widgets.getMouseLocation()
+
+        -- find the leaf rect under the cursor (or the whole container when nothing is docked yet)
+        local targetLeafId: string? = nil
+        local leafRect: { pos: Vector2, size: Vector2 }? = nil
+        if dock.rootId == nil then
+            leafRect = { pos = Vector2.zero, size = container.AbsoluteSize }
+        else
+            for id, node in dock.nodes do
+                if node.kind == "leaf" and node.rect and rectContains(mouse, node.rect.pos, node.rect.size) then
+                    targetLeafId = id
+                    leafRect = node.rect
+                    break
+                end
+            end
+        end
+
+        local emptySpace: boolean = dock.rootId == nil
+        if leafRect == nil then
+            for _, m in overlay.markers do
+                m.Visible = false
+            end
+            overlay.preview.Visible = false
+            dock.hoverDrop = nil
+            return
+        end
+
+        -- the cross of markers is purely visual feedback; the drop side is chosen by WHICH
+        -- region of the leaf the cursor sits in (outer EDGE fraction on a side → that direction,
+        -- middle → tab). A tiny centre marker was nearly impossible to aim for, so every drop
+        -- collapsed to a centre-tab — windows piled into one leaf and hid each other.
+        local center: Vector2 = leafRect.pos + leafRect.size / 2
+        local half: number = ZONE / 2
+        local step: number = ZONE + ZONE_GAP
+        local spots: { [string]: Vector2 } = {
+            center = center,
+            left = center - Vector2.new(step, 0),
+            right = center + Vector2.new(step, 0),
+            top = center - Vector2.new(0, step),
+            bottom = center + Vector2.new(0, step),
+        }
+
+        local side: string = "center"
+        if not emptySpace then
+            local EDGE: number = 0.30 -- outer 30% on a side docks to that side; middle tabs
+            local fx: number = (mouse.X - leafRect.pos.X) / math.max(leafRect.size.X, 1)
+            local fy: number = (mouse.Y - leafRect.pos.Y) / math.max(leafRect.size.Y, 1)
+            local dl, dr, dt, db = fx, 1 - fx, fy, 1 - fy
+            local nearest: number = math.min(dl, dr, dt, db)
+            if nearest >= EDGE then
+                side = "center"
+            elseif nearest == dl then
+                side = "left"
+            elseif nearest == dr then
+                side = "right"
+            elseif nearest == dt then
+                side = "top"
+            else
+                side = "bottom"
+            end
+        end
+
+        -- draw/highlight the marker cross (directional markers hidden when nothing is docked yet)
+        for name, spot in spots do
+            local visible: boolean = not (emptySpace and name ~= "center")
+            local m = overlay.markers[name]
+            m.Visible = visible
+            m.Position = UDim2.fromOffset(spot.X - half, spot.Y - half)
+            m.BackgroundTransparency = if name == side then 0.15 else 0.5
+        end
+
+        -- over a leaf → always a valid drop target; release outside any leaf leaves it floating
+        local rpos, rsize = previewRegion(leafRect, side)
+        overlay.preview.Visible = true
+        overlay.preview.Position = UDim2.fromOffset(rpos.X, rpos.Y)
+        overlay.preview.Size = UDim2.fromOffset(rsize.X, rsize.Y)
+        dock.hoverDrop = { leafId = targetLeafId, side = side }
+    end
+
+    -- called by Window.luau when a floating-window drag is released: docks into the hovered
+    -- zone if there is one, otherwise leaves the window floating. Always clears drag/overlay.
+    function Iris.DockDrop(windowId: string): boolean
+        local drop = dock.hoverDrop
+        dock.dragWindowId = nil
+        dock.hoverDrop = nil
+        if dock.overlay then
+            dock.overlay.root.Visible = false
+        end
+        if drop == nil then
+            return false
+        end
+        if drop.leafId == nil then
+            Iris.DockWindow(windowId) -- empty dockspace: window becomes the root leaf
+        else
+            local leaf = dock.nodes[drop.leafId]
+            local anchor: string? = leaf and leaf.active
+            Iris.DockWindow(windowId, drop.side, anchor)
+        end
+        return true
+    end
+
     -- a splitter is a wide transparent hit-area (GRAB) with a thin visible line (GUTTER)
     -- centred inside it, so the divider reads as a hairline but is still easy to grab.
     local function getSplitter(splitId: string, container: Frame): TextButton
@@ -476,28 +680,14 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
         button.ZIndex = DOCK_ZINDEX + 2
         widgets.applyTextStyle(button :: any)
 
-        -- asymmetric padding: leave room on the right for the ✕ undock button
+        -- tabs are purely for selecting the active window in a leaf; undocking is done from the
+        -- window's title-bar arrow (a per-tab ✕ sat against the title and caused mis-undocks).
         local padding = Instance.new("UIPadding")
         padding.PaddingLeft = UDim.new(0, 8)
-        padding.PaddingRight = UDim.new(0, TAB_HEIGHT)
+        padding.PaddingRight = UDim.new(0, 8)
         padding.PaddingTop = UDim.new(0, 2)
         padding.PaddingBottom = UDim.new(0, 2)
         padding.Parent = button
-
-        local close = Instance.new("TextButton")
-        close.Name = "Close"
-        close.Text = "✕"
-        close.AnchorPoint = Vector2.new(1, 0.5)
-        close.Position = UDim2.new(1, -4, 0.5, 0)
-        close.Size = UDim2.fromOffset(TAB_HEIGHT - 8, TAB_HEIGHT - 8)
-        close.BackgroundTransparency = 1
-        close.BorderSizePixel = 0
-        close.ZIndex = DOCK_ZINDEX + 3
-        widgets.applyTextStyle(close :: any)
-        close.MouseButton1Click:Connect(function()
-            Iris.UndockWindow(windowId)
-        end)
-        close.Parent = button
 
         button.MouseButton1Click:Connect(function()
             local leafId: string? = dock.windowToLeaf[windowId]
@@ -505,6 +695,7 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
                 dock.nodes[leafId].active = windowId
             end
         end)
+        -- right-click stays as a quick undock shortcut (cannot misfire on a left-click select)
         button.MouseButton2Click:Connect(function()
             Iris.UndockWindow(windowId)
         end)
@@ -567,6 +758,11 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
                 "containerAbsSize=",
                 if container then container.AbsoluteSize else nil
             )
+        end
+
+        -- drop-zone overlay runs even with an empty dockspace, so the first window can be dropped
+        if container ~= nil then
+            updateDockOverlay(container)
         end
 
         if container == nil or dock.rootId == nil then

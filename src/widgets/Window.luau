@@ -405,6 +405,7 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
 		if not Iris._started then
 			return
 		end
+		local droppedWindow: Types.Widget? = nil
 		if
 			(input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch)
 			and isDragging
@@ -414,6 +415,7 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
 			local dragInstance: TextButton = Window.WindowButton
 			isDragging = false
 			dragWindow.state.position:set(Vector2.new(dragInstance.Position.X.Offset, dragInstance.Position.Y.Offset))
+			droppedWindow = dragWindow
 		end
 		if
 			(input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch)
@@ -429,15 +431,21 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
 			quickSwapWindows()
 		end
 		showDragCatcher(false)
+		-- if the move ended over a dock drop-zone, dock the window there (clears overlay either way)
+		if droppedWindow and Iris.DockDrop then
+			Iris.DockDrop(droppedWindow.ID)
+		end
 	end
 
 	-- MouseButton1Up has no InputObject; end any active move/resize directly. Used by the
 	-- catcher because InputEnded for MouseButton1 is not reliable on a plugin GuiObject.
 	local function releaseDragResize()
+		local droppedWindow: Types.Widget? = nil
 		if isDragging and dragWindow then
 			local dragInstance: TextButton = (dragWindow.Instance :: Frame).WindowButton
 			isDragging = false
 			dragWindow.state.position:set(Vector2.new(dragInstance.Position.X.Offset, dragInstance.Position.Y.Offset))
+			droppedWindow = dragWindow
 		end
 		if isResizing and resizeWindow then
 			local Window = resizeWindow.Instance :: Frame
@@ -445,6 +453,9 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
 			resizeWindow.state.size:set(Window.WindowButton.AbsoluteSize)
 		end
 		showDragCatcher(false)
+		if droppedWindow and Iris.DockDrop then
+			Iris.DockDrop(droppedWindow.ID)
+		end
 	end
 
 	-- full-screen capture button (plugin only); created lazily once the root exists.
@@ -612,6 +623,9 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
                     isDragging = true
                     moveDeltaCursorPosition = widgets.getMouseLocation() - thisWidget.state.position.value
                     showDragCatcher(true)
+                    if Iris._dock then
+                        Iris._dock.dragWindowId = thisWidget.ID
+                    end
                 end
             end)
 
@@ -631,6 +645,9 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
                     isDragging = true
                     moveDeltaCursorPosition = widgets.getMouseLocation() - thisWidget.state.position.value
                     showDragCatcher(true)
+                    if Iris._dock then
+                        Iris._dock.dragWindowId = thisWidget.ID
+                    end
                 end
             end)
 
