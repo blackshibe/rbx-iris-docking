@@ -100,6 +100,8 @@ return function(Iris: Types.Iris)
     Iris.DockWindow = Iris.Internal.DockWindow
     Iris.UndockWindow = Iris.Internal.UndockWindow
     Iris.IsWindowDocked = Iris.Internal.IsWindowDocked
+    Iris.SerializeDock = Iris.Internal.SerializeDock
+    Iris.DeserializeDock = Iris.Internal.DeserializeDock
 
     --[=[
         @prop Tooltip Iris.Tooltip

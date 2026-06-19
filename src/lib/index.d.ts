@@ -99,6 +99,12 @@ declare namespace Iris {
 	export function DockWindow(windowId: string, side?: "left" | "right" | "top" | "bottom" | "center", targetWindowId?: string): void;
 	export function UndockWindow(windowId: string): void;
 	export function IsWindowDocked(windowId: string): boolean;
+	/** Snapshot the current dock layout (split tree, tabs, ratios) and floating-window geometry
+	 * as a plain JSON-safe table — persist it with `plugin:SetSetting`. */
+	export function SerializeDock(): object;
+	/** Restore a layout produced by {@link SerializeDock}. Safe to call before the windows are
+	 * created; each window binds to its leaf as it next renders. Returns false if `data` is unusable. */
+	export function DeserializeDock(data: object | undefined): boolean;
 
 	// ID API
 	export function PushId(id: WidgetID): void;

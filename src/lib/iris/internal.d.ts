@@ -139,6 +139,8 @@ interface IrisInternal {
 	DockWindow: (windowId: string, side?: string, targetWindowId?: string) => void;
 	UndockWindow: (windowId: string) => void;
 	IsWindowDocked: (windowId: string) => boolean;
+	SerializeDock: () => object;
+	DeserializeDock: (data: object | undefined) => boolean;
 
 	// Generate
 	_generateEmptyVDOM: () => Record<WidgetID, Widget>;

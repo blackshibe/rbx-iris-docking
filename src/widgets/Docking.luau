@@ -11,7 +11,7 @@
 local Types = require(script.Parent.Parent.Types)
 
 return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
-    print("[DOCK] Docking.luau loaded — build v24 (region drop zones)")
+    print("[DOCK] Docking.luau loaded — build v26 (serialize export fix)")
     local TAB_HEIGHT = 24
     local GUTTER = 2 -- visible gap between panels
     local GRAB = 7 -- splitter mouse hit-area (wider than the visible gutter)
@@ -242,6 +242,139 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
 
     function Iris.IsWindowDocked(windowId: string): boolean
         return dock.windowToLeaf[windowId] ~= nil
+    end
+
+    -- serialization ----------------------------------------------------------------
+    -- Produce a plain (JSON-safe) snapshot of the workspace: the split tree, each leaf's tab
+    -- membership/active tab and splitter ratios, plus geometry of floating windows. parent
+    -- pointers and windowToLeaf are derived on load, so they are not stored.
+    function Iris.SerializeDock(): { [string]: any }
+        local nodes: { [string]: any } = {}
+        for id, node in dock.nodes do
+            if node.kind == "leaf" then
+                local windows: { string } = {}
+                for i, w in node.windows do
+                    windows[i] = w
+                end
+                nodes[id] = { kind = "leaf", windows = windows, active = node.active }
+            elseif node.kind == "split" then
+                nodes[id] = {
+                    kind = "split",
+                    orientation = node.orientation,
+                    childA = node.childA,
+                    childB = node.childB,
+                    ratio = node.ratio,
+                }
+            end
+        end
+
+        local floating: { [string]: any } = {}
+        for windowId, widget in Iris._windowWidgets do
+            if type(widget.dockId) ~= "string" and widget.state then
+                local pos: Vector2 = widget.state.position.value
+                local size: Vector2 = widget.state.size.value
+                floating[windowId] = {
+                    px = pos.X,
+                    py = pos.Y,
+                    sx = size.X,
+                    sy = size.Y,
+                    isOpened = widget.state.isOpened.value,
+                    isUncollapsed = widget.state.isUncollapsed.value,
+                }
+            end
+        end
+
+        return { version = 1, rootId = dock.rootId, nextId = dock.nextId, nodes = nodes, floating = floating }
+    end
+
+    -- Rebuild the workspace from a SerializeDock() snapshot. Safe to call before the windows
+    -- themselves exist: the tree binds each window as it next appears in DockSpace. Returns
+    -- false if the data is not a usable snapshot.
+    function Iris.DeserializeDock(data: { [string]: any }?): boolean
+        if type(data) ~= "table" or type(data.nodes) ~= "table" then
+            return false
+        end
+
+        -- any window docked under the OLD tree that the new tree doesn't mention goes floating
+        local newWindowToLeaf: { [string]: string } = {}
+        for id, n in data.nodes do
+            if n.kind == "leaf" and type(n.windows) == "table" then
+                for _, w in n.windows do
+                    newWindowToLeaf[w] = id
+                end
+            end
+        end
+        for windowId, widget in Iris._windowWidgets do
+            if type(widget.dockId) == "string" and newWindowToLeaf[windowId] == nil then
+                widget.dockId = nil
+            end
+        end
+
+        dock.nodes = {}
+        dock.windowToLeaf = {}
+        dock.rootId = data.rootId
+        local maxId: number = 0
+        for id, n in data.nodes do
+            if n.kind == "leaf" then
+                local windows: { string } = {}
+                for i, w in n.windows do
+                    windows[i] = w
+                end
+                dock.nodes[id] = { id = id, kind = "leaf", windows = windows, active = n.active, parent = nil }
+                for _, w in windows do
+                    dock.windowToLeaf[w] = id
+                end
+            elseif n.kind == "split" then
+                dock.nodes[id] =
+                    { id = id, kind = "split", orientation = n.orientation, childA = n.childA, childB = n.childB, ratio = n.ratio or 0.5, parent = nil }
+            end
+            local num: number? = tonumber(string.match(id, "docknode_(%d+)"))
+            if num and num > maxId then
+                maxId = num
+            end
+        end
+
+        -- derive parent links from the split children
+        for id, node in dock.nodes do
+            if node.kind == "split" then
+                local a = dock.nodes[node.childA]
+                local b = dock.nodes[node.childB]
+                if a then
+                    a.parent = id
+                end
+                if b then
+                    b.parent = id
+                end
+            end
+        end
+
+        -- keep id generation ahead of anything we just loaded so new docks don't collide
+        dock.nextId = math.max(tonumber(data.nextId) or 0, maxId)
+
+        for windowId, leafId in dock.windowToLeaf do
+            local widget = Iris._windowWidgets[windowId]
+            if widget then
+                widget.dockId = leafId
+            end
+        end
+
+        if type(data.floating) == "table" then
+            for windowId, f in data.floating do
+                local widget = Iris._windowWidgets[windowId]
+                if widget and type(widget.dockId) ~= "string" and widget.state then
+                    widget.state.position:set(Vector2.new(f.px or 0, f.py or 0))
+                    widget.state.size:set(Vector2.new(f.sx or 400, f.sy or 300))
+                    if f.isOpened ~= nil then
+                        widget.state.isOpened:set(f.isOpened)
+                    end
+                    if f.isUncollapsed ~= nil then
+                        widget.state.isUncollapsed:set(f.isUncollapsed)
+                    end
+                end
+            end
+        end
+
+        return true
     end
 
     -- rect computation -----------------------------------------------------------
