@@ -1,12 +1,25 @@
 local Types = require(script.Parent.Parent.Types)
 
 return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
+	-- a widget's metatable resolves missing fields to generated accessor functions, so an
+	-- unset/cleared `dockId` reads back as a function rather than nil. A window is docked only
+	-- when dockId is an actual leaf-id string; treat anything else as floating.
+	local function isFloating(w: Types.Widget): boolean
+		return type(w.dockId) ~= "string"
+	end
+
 	local function relocateTooltips()
 		if Iris._rootInstance == nil then
 			return
 		end
 		local PopupScreenGui = Iris._rootInstance:FindFirstChild("PopupScreenGui")
-		local TooltipContainer = PopupScreenGui.TooltipContainer
+		if PopupScreenGui == nil then
+			return
+		end
+		local TooltipContainer = PopupScreenGui:FindFirstChild("TooltipContainer")
+		if TooltipContainer == nil then
+			return
+		end
 		local mouseLocation: Vector2 = widgets.getMouseLocation()
 		local newPosition: Vector2 = widgets.findBestWindowPosForPopup(
 			mouseLocation,
@@ -212,11 +225,15 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
 			TitleBar.BackgroundTransparency = Iris._config.TitleBgActiveTransparency
 			WindowButton.UIStroke.Color = Iris._config.BorderActiveColor
 
-			windowDisplayOrder += 1
-			if thisWidget.usesScreenGUI then
-				Window.DisplayOrder = windowDisplayOrder + Iris._config.DisplayOrderOffset
-			else
-				Window.ZIndex = windowDisplayOrder + Iris._config.DisplayOrderOffset
+			-- docked windows are pinned low by the dock layer so its chrome stays on top; only
+			-- floating windows get raised to the focused band.
+			if isFloating(thisWidget) then
+				windowDisplayOrder += 1
+				if thisWidget.usesScreenGUI then
+					Window.DisplayOrder = windowDisplayOrder + Iris._config.DisplayOrderOffset
+				else
+					Window.ZIndex = windowDisplayOrder + Iris._config.DisplayOrderOffset
+				end
 			end
 
 			if thisWidget.state.isUncollapsed.value == false then
@@ -277,7 +294,7 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
 			and not isInsideWindow
 			and anyFocusedWindow
 			and focusedWindow
-			and focusedWindow.dockId == nil
+			and isFloating(focusedWindow)
 		then
 			local midWindow: Vector2 = focusedWindow.state.position.value + (focusedWindow.state.size.value / 2)
 			local cursorPosition: Vector2 = widgets.getMouseLocation() - midWindow
@@ -414,6 +431,22 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
 		showDragCatcher(false)
 	end
 
+	-- MouseButton1Up has no InputObject; end any active move/resize directly. Used by the
+	-- catcher because InputEnded for MouseButton1 is not reliable on a plugin GuiObject.
+	local function releaseDragResize()
+		if isDragging and dragWindow then
+			local dragInstance: TextButton = (dragWindow.Instance :: Frame).WindowButton
+			isDragging = false
+			dragWindow.state.position:set(Vector2.new(dragInstance.Position.X.Offset, dragInstance.Position.Y.Offset))
+		end
+		if isResizing and resizeWindow then
+			local Window = resizeWindow.Instance :: Frame
+			isResizing = false
+			resizeWindow.state.size:set(Window.WindowButton.AbsoluteSize)
+		end
+		showDragCatcher(false)
+	end
+
 	-- full-screen capture button (plugin only); created lazily once the root exists.
 	local dragCatcher: TextButton? = nil
 	local function getDragCatcher(): TextButton?
@@ -440,6 +473,10 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
 		catcher.InputEnded:Connect(function(input: InputObject)
 			print("[DOCK] window catcher InputEnded", input.UserInputType, "drag=", isDragging, "resize=", isResizing)
 			processInputEnded(input)
+		end)
+		catcher.MouseButton1Up:Connect(function()
+			print("[DOCK] window catcher MB1Up drag=", isDragging, "resize=", isResizing)
+			releaseDragResize()
 		end)
 		dragCatcher = catcher
 		return catcher
@@ -570,7 +607,26 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
                 if thisWidget.state.isUncollapsed.value then
                     Iris.SetFocusedWindow(thisWidget)
                 end
-                if not thisWidget.arguments.NoMove and thisWidget.dockId == nil and input.UserInputType == Enum.UserInputType.MouseButton1 then
+                if not thisWidget.arguments.NoMove and isFloating(thisWidget) and input.UserInputType == Enum.UserInputType.MouseButton1 then
+                    dragWindow = thisWidget
+                    isDragging = true
+                    moveDeltaCursorPosition = widgets.getMouseLocation() - thisWidget.state.position.value
+                    showDragCatcher(true)
+                end
+            end)
+
+            -- InputBegan does NOT fire over a plugin widget, but MouseButton1Down does. Drive
+            -- the move-drag from the button signal in plugin context (the titlebar Frame is
+            -- non-Active, so titlebar clicks fall through to this WindowButton beneath it).
+            WindowButton.MouseButton1Down:Connect(function()
+                if Iris._pluginGui == nil then
+                    return -- game context already handled by InputBegan above
+                end
+                if thisWidget.state.isUncollapsed.value then
+                    Iris.SetFocusedWindow(thisWidget)
+                end
+                print("[DOCK] window MB1Down", thisWidget.ID, "floating=", isFloating(thisWidget), "noMove=", thisWidget.arguments.NoMove)
+                if not thisWidget.arguments.NoMove and isFloating(thisWidget) then
                     dragWindow = thisWidget
                     isDragging = true
                     moveDeltaCursorPosition = widgets.getMouseLocation() - thisWidget.state.position.value
@@ -656,7 +712,7 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
             widgets.UIListLayout(TitleBar, Enum.FillDirection.Horizontal, UDim.new(0, Iris._config.FramePadding.X)).VerticalAlignment = Enum.VerticalAlignment.Center
             widgets.applyInputBegan(thisWidget, TitleBar, function(input: InputObject)
                 if input.UserInputType == Enum.UserInputType.Touch then
-                    if not thisWidget.arguments.NoMove and thisWidget.dockId == nil then
+                    if not thisWidget.arguments.NoMove and isFloating(thisWidget) then
                         dragWindow = thisWidget
                         isDragging = true
                         showDragCatcher(true)
@@ -684,6 +740,12 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
             CollapseButton.Parent = TitleBar
 
             widgets.applyButtonClick(thisWidget, CollapseButton, function()
+                -- docked: the collapse button becomes an undock control (the dock layer shows it
+                -- as a right-pointing arrow). floating: normal collapse toggle.
+                if not isFloating(thisWidget) then
+                    Iris.UndockWindow(thisWidget.ID)
+                    return
+                end
                 thisWidget.state.isUncollapsed:set(not thisWidget.state.isUncollapsed.value)
             end)
 
@@ -799,7 +861,7 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
             })
 
             widgets.applyButtonDown(thisWidget, ResizeGrip, function()
-                if thisWidget.dockId ~= nil then
+                if not isFloating(thisWidget) then
                     return
                 end
                 if not anyFocusedWindow or not (focusedWindow == thisWidget) then
@@ -859,7 +921,7 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
             local MenuBar: Frame? = Content:FindFirstChild("MenuBar")
             local ResizeGrip: TextButton = WindowButton.ResizeGrip
 
-            if thisWidget.arguments.NoResize ~= true and thisWidget.dockId == nil then
+            if thisWidget.arguments.NoResize ~= true and isFloating(thisWidget) then
                 ResizeGrip.Visible = true
             else
                 ResizeGrip.Visible = false
@@ -869,7 +931,9 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
             else
                 ChildContainer.ScrollBarThickness = Iris._config.ScrollbarSize
             end
-            if thisWidget.arguments.NoTitleBar or thisWidget.dockId ~= nil then
+            -- docked windows keep their title bar: it hosts the undock control (the collapse
+            -- button, shown by the dock layer as a right-pointing arrow).
+            if thisWidget.arguments.NoTitleBar then
                 TitleBar.Visible = false
             else
                 TitleBar.Visible = true
@@ -974,7 +1038,7 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
                     MenuBar.Visible = not thisWidget.arguments.NoMenu
                 end
                 ChildContainer.Visible = true
-                if thisWidget.arguments.NoResize ~= true and thisWidget.dockId == nil then
+                if thisWidget.arguments.NoResize ~= true and isFloating(thisWidget) then
                     ResizeGrip.Visible = true
                 end
                 WindowButton.AutomaticSize = Enum.AutomaticSize.None

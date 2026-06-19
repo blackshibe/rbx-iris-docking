@@ -11,13 +11,18 @@
 local Types = require(script.Parent.Parent.Types)
 
 return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
-    print("[DOCK] Docking.luau loaded — build v13 (instrumented)")
+    print("[DOCK] Docking.luau loaded — build v19 (instrumented)")
     local TAB_HEIGHT = 24
     local GUTTER = 2 -- visible gap between panels
     local GRAB = 7 -- splitter mouse hit-area (wider than the visible gutter)
     -- dock surface sits BELOW windows (DisplayOrderOffset = 127), so floating windows draw
     -- over it and receive clicks. The drag catcher is the exception: it lives in PopupScreenGui
     -- (above every window) so it can capture the release wherever the cursor ends up.
+    -- ZIndexBehavior.Sibling orders WHOLE subtrees by their root's ZIndex, so the stack is set
+    -- entirely by the sibling roots under PseudoWindowScreenGui: docked windows must sit BELOW
+    -- the dock container (so its splitters/tab bars are grabbable over them), while floating
+    -- windows (≥ DisplayOrderOffset, raised on focus) sit ABOVE the container.
+    local DOCKED_WINDOW_ZINDEX = 5
     local DOCK_ZINDEX = 10
     local CATCHER_ZINDEX = 2_000_000
 
@@ -197,6 +202,24 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
         local widget: Types.Widget? = Iris._windowWidgets[windowId]
         if widget then
             widget.dockId = nil
+            -- restore the floating chrome the dock had overridden: resize grip back, collapse
+            -- arrow back to the down (minimize) glyph. (Window.Update only refreshes on argument
+            -- change, so the dock drives these directly.)
+            local inst = widget.Instance
+            local windowButton = inst and inst:FindFirstChild("WindowButton")
+            if windowButton then
+                local grip = windowButton:FindFirstChild("ResizeGrip")
+                if grip then
+                    grip.Visible = widget.arguments.NoResize ~= true
+                end
+                local content = windowButton:FindFirstChild("Content")
+                local titleBar = content and content:FindFirstChild("TitleBar")
+                local collapseButton = titleBar and titleBar:FindFirstChild("CollapseButton")
+                local arrow = collapseButton and collapseButton:FindFirstChild("Arrow")
+                if arrow then
+                    (arrow :: ImageLabel).Image = widgets.ICONS.DOWN_POINTING_TRIANGLE
+                end
+            end
             -- restore as a visible floating window: the dock may have hidden it (inactive tab)
             -- and left it at the full leaf rect, so give it a modest cascaded size/position and
             -- focus it so it sits above the still-docked windows instead of behind them.
@@ -268,6 +291,28 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
         end
     end
 
+    -- a window's own chrome (Update) is only refreshed on argument change, never when it gets
+    -- docked, so we drive the docked appearance here every frame: no resize grip, and the
+    -- collapse button repurposed as an undock control (right-pointing arrow; the click handler
+    -- in Window.luau undocks when the window is docked).
+    local function applyDockedChrome(inst: GuiObject)
+        local windowButton = inst:FindFirstChild("WindowButton")
+        if windowButton == nil then
+            return
+        end
+        local grip = windowButton:FindFirstChild("ResizeGrip")
+        if grip then
+            grip.Visible = false
+        end
+        local content = windowButton:FindFirstChild("Content")
+        local titleBar = content and content:FindFirstChild("TitleBar")
+        local collapseButton = titleBar and titleBar:FindFirstChild("CollapseButton")
+        local arrow = collapseButton and collapseButton:FindFirstChild("Arrow")
+        if arrow and (arrow :: ImageLabel).Image ~= widgets.ICONS.RIGHT_POINTING_TRIANGLE then
+            (arrow :: ImageLabel).Image = widgets.ICONS.RIGHT_POINTING_TRIANGLE
+        end
+    end
+
     -- UserInputService events do NOT fire over a plugin widget (verified: splitter DOWN
     -- fires from the GuiButton, but the registered UIS InputChanged/InputEnded never run).
     -- So we drive the drag per-frame from DockSpace via getMouseLocation() (which works in a
@@ -294,9 +339,16 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
     -- always over it, so its InputEnded reliably catches the release wherever the mouse is
     -- (the splitter's own InputEnded would miss it once the cursor leaves the thin handle,
     -- and UserInputService never fires over a plugin widget at all).
-    local function ensureDragCatcher(container: Frame): TextButton
+    local function ensureDragCatcher(): TextButton?
         if dock.dragCatcher and dock.dragCatcher.Parent then
             return dock.dragCatcher
+        end
+        -- the catcher must sit ABOVE the windows so it captures the release wherever the
+        -- cursor lands; PopupScreenGui renders entirely above the window layer (Sibling
+        -- ZIndexBehavior), unlike the dock container which lives in the window layer.
+        local popup = Iris._rootInstance and Iris._rootInstance:FindFirstChild("PopupScreenGui")
+        if popup == nil then
+            return nil
         end
         local catcher = Instance.new("TextButton")
         catcher.Name = "DockDragCatcher"
@@ -306,8 +358,8 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
         catcher.BorderSizePixel = 0
         catcher.Size = UDim2.fromScale(1, 1)
         catcher.Visible = false
-        catcher.ZIndex = DOCK_ZINDEX + 10
-        catcher.Parent = container
+        catcher.ZIndex = CATCHER_ZINDEX
+        catcher.Parent = popup
         local function onEnd(input: InputObject)
             print("[DOCK] catcher InputEnded", input.UserInputType, "active=", dock.activeSplitter)
             if input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -341,23 +393,6 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
             node.ratio = math.clamp((mouse.Y - rect.pos.Y) / math.max(rect.size.Y, 1), 0.05, 0.95)
         end
         print("[DOCK] drag(frame)", dock.activeSplitter, "mouse=", mouse, "ratio=", string.format("%.3f", node.ratio))
-    end
-
-    -- hook the PluginGui's input events once it exists (Init sets Iris._pluginGui, which
-    -- happens after this module loads, so we connect lazily from DockSpace).
-    local function ensurePluginInputHook()
-        if dock._pluginHooked or Iris._pluginGui == nil then
-            return
-        end
-        dock._pluginHooked = true
-        print("[DOCK] hooking PluginGui input events")
-        Iris._pluginGui.InputEnded:Connect(function(input: InputObject)
-            print("[DOCK] pluginGui InputEnded", input.UserInputType, "active=", dock.activeSplitter)
-            if input.UserInputType == Enum.UserInputType.MouseButton1 and dock.activeSplitter ~= nil then
-                print("[DOCK] release splitter", dock.activeSplitter)
-                releaseSplitter()
-            end
-        end)
     end
 
     -- a splitter is a wide transparent hit-area (GRAB) with a thin visible line (GUTTER)
@@ -500,7 +535,6 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
     -- offset/size are optional; when omitted the dockspace fills the whole container.
     -- Pass them to leave room for a menu bar or status strip at the top.
     function Iris.DockSpace(offset: Vector2?, size: Vector2?)
-        ensurePluginInputHook()
         updateActiveSplitter()
         local container: Frame? = ensureContainer()
 
@@ -524,6 +558,7 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
         local changed: boolean = sig ~= dock._lastSig
         if changed then
             dock._lastSig = sig
+            dock._dumpFrames = 4 -- dump settled geometry/zindex for a few frames after a change
             print(
                 "[DOCK] DockSpace state:",
                 sig,
@@ -537,7 +572,7 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
         if container == nil or dock.rootId == nil then
             return
         end
-        ensureDragCatcher(container)
+        ensureDragCatcher()
 
         local origin: Vector2 = offset or Vector2.zero
         local area: Vector2 = size or (container.AbsoluteSize - origin)
@@ -619,6 +654,11 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
 
                     if widget then
                         widget.dockId = nodeId
+                        -- pin docked windows beneath the dock container so chrome stays grabbable
+                        if widget.Instance then
+                            widget.Instance.ZIndex = DOCKED_WINDOW_ZINDEX
+                            applyDockedChrome(widget.Instance)
+                        end
                         setStateIfChanged(widget.state.isOpened, isActive)
                         if isActive then
                             setStateIfChanged(widget.state.isUncollapsed, true)
@@ -647,6 +687,37 @@ return function(Iris: Types.Internal, widgets: Types.WidgetUtility)
             if not liveSplitters[splitId] then
                 splitter:Destroy()
                 dock.splitters[splitId] = nil
+            end
+        end
+
+        -- settled-geometry diagnostic: AbsolutePosition lags a frame after layout, so we dump
+        -- for a few frames following any structural change to capture real stacking/hit-areas.
+        if dock._dumpFrames and dock._dumpFrames > 0 then
+            dock._dumpFrames -= 1
+            if dock._dumpFrames == 0 then
+                print("[DOCK][Z] container z=", container.ZIndex, "absPos=", container.AbsolutePosition, "absSize=", container.AbsoluteSize)
+                for splitId, splitter in dock.splitters do
+                    print("[DOCK][Z] splitter", splitId, "z=", splitter.ZIndex, "absPos=", splitter.AbsolutePosition, "absSize=", splitter.AbsoluteSize, "visible=", splitter.Visible)
+                end
+                for leafId, bar in dock.tabBars do
+                    print("[DOCK][Z] tabbar", leafId, "z=", bar.ZIndex, "absPos=", bar.AbsolutePosition, "absSize=", bar.AbsoluteSize)
+                end
+                for _, node in dock.nodes do
+                    if node.kind == "leaf" and node.active then
+                        local widget = Iris._windowWidgets[node.active]
+                        local inst = widget and widget.Instance :: Frame?
+                        if inst then
+                            local wb = inst:FindFirstChild("WindowButton") :: GuiObject?
+                            local cc = wb and wb:FindFirstChild("Content") and (wb.Content :: any):FindFirstChild("WindowContainer") :: GuiObject?
+                            print(
+                                "[DOCK][Z] dockedWin", node.active,
+                                "windowZ=", inst.ZIndex,
+                                "btnZ=", wb and wb.ZIndex, "btnAbsPos=", wb and wb.AbsolutePosition, "btnAbsSize=", wb and wb.AbsoluteSize,
+                                "containerZ=", cc and cc.ZIndex, "containerAbsPos=", cc and cc.AbsolutePosition, "containerAbsSize=", cc and cc.AbsoluteSize
+                            )
+                        end
+                    end
+                end
             end
         end
     end
